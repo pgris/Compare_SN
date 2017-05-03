@@ -16,7 +16,7 @@ from lsst.sims.photUtils import Bandpass,Sed
 
 class Simul_Fit_SN():
 
-    def __init__(self,T0,c,x1,z,observations,model='salt2-extended',version='1.0',sn_type='Ia',ra=0.,dec=0.):
+    def __init__(self,T0,c,x1,z,observations,model='salt2-extended',version='1.0',sn_type='Ia',ra=0.,dec=0.,syste=False):
         
         self.T0=T0
         self.c=c
@@ -31,12 +31,32 @@ class Simul_Fit_SN():
         self.dec_field=dec
         self.params=parameters()
         self.filterNames = ['u','g','r','i','z','y']
+        self.syste=syste
 
         #This will be the data for sncosmo fitting
         self.table_for_fit={}
         self.table_for_fit['error_coadd_opsim'] = Table(names=('time','flux','fluxerr','band','zp','zpsys'), dtype=('f8', 'f8','f8','S7','f4','S4'))
         self.table_for_fit['error_coadd_through'] = Table(names=('time','flux','fluxerr','band','zp','zpsys'), dtype=('f8', 'f8','f8','S7','f4','S4'))
         self.table_LC=Table(names=('filter','expMJD','visitExpTime','FWHMeff','moon_frac','filtSkyBrightness','kAtm','airmass','fiveSigmaDepth','Nexp','e_per_sec','e_per_sec_err'), dtype=('S7','f8', 'f8','f8','f8', 'f8','f8','i8','f8','f8','f8','f8'))
+
+        if syste:
+            vars_a=['filter','expMJD','visitExpTime','FWHMeff','moon_frac','filtSkyBrightness','kAtm','airmass','fiveSigmaDepth','Nexp','e_per_sec','e_per_sec_err','mag','err_mag','fiveSigmaThrough']
+            dtype_a=['S7','f8', 'f8','f8','f8', 'f8','f8','i8','f8','f8','f8','f8','f8','f8','f8']
+
+            for i in range(1,6,1):
+                vars_a.append('err_mag_plus_'+str(i))
+                vars_a.append('err_mag_minus_'+str(i))
+                vars_a.append('fiveSigmaThrough_plus_'+str(i))
+                vars_a.append('fiveSigmaThrough_minus_'+str(i))
+                dtype_a.append('f8')
+                dtype_a.append('f8')
+                dtype_a.append('f8')
+                dtype_a.append('f8')
+
+            vars_a.append('z')
+            dtype_a.append('f8')
+
+            self.table_LC_syste=Table(names=tuple(vars_a), dtype=tuple(dtype_a))
 
         self.transmission=Throughputs()
 
@@ -119,19 +139,12 @@ class Simul_Fit_SN():
              FWHMeff=obs['FWHMeff']
              if flux_SN >0:
                   
-                 wavelen_min, wavelen_max, wavelen_step=self.transmission.lsst_system[filtre].getWavelenLimits(None,None,None)
-                 flatSed = Sed()
-                 flatSed.setFlatSED(wavelen_min, wavelen_max, wavelen_step)
-                 #flux0=np.power(10.,-0.4*obs['filtSkyBrightness'])
-                 flux0=np.power(10.,-0.4*obs['sky'])
-                 flatSed.multiplyFluxNorm(flux0)
-
                  mag_SN=-2.5 * np.log10(flux_SN / 3631.0)
              
                  #print 'hello',finSeeing,FWHMeff
 
-                 m5_calc=SignalToNoise.calcM5(flatSed,self.transmission.lsst_atmos_aerosol[filtre],self.transmission.lsst_system[filtre],photParams=photParams,FWHMeff=FWHMeff)
-                 snr_m5_through,gamma_through=SignalToNoise.calcSNR_m5(mag_SN,self.transmission.lsst_atmos_aerosol[filtre],m5_calc,photParams)
+                 m5_calc,snr_m5_through=self.Get_m5(filtre,mag_SN,obs['sky'],photParams,FWHMeff)
+                 
                  m5_opsim+=1.25*np.log10(visittime/30.)
                  snr_m5_opsim,gamma_opsim=SignalToNoise.calcSNR_m5(mag_SN,self.transmission.lsst_atmos_aerosol[filtre],m5_opsim,photParams)
 
@@ -153,7 +166,18 @@ class Simul_Fit_SN():
                  #print 'test',e_per_sec_err,e_per_sec/snr_m5_through
                  #print 'hello',filtre,obs['expMJD'],obs['visitExpTime'],obs['rawSeeing'],obs['moon_frac'],obs['filtSkyBrightness'],obs['kAtm'],obs['airmass'],obs['fiveSigmaDepth'],obs['Nexp'],e_per_sec,e_per_sec_err,flux_SN,err_flux_SN_through
                  self.table_LC.add_row(('LSST::'+filtre,obs['mjd'],visittime,FWHMeff,obs['moon_frac'],obs['sky'],obs['kAtm'],obs['airmass'],obs['m5sigmadepth'],obs['Nexp'],e_per_sec,e_per_sec/snr_m5_through))
-
+                 if self.syste:
+                     resu=['LSST::'+filtre,obs['mjd'],visittime,FWHMeff,obs['moon_frac'],obs['sky'],obs['kAtm'],obs['airmass'],m5_opsim,obs['Nexp'],e_per_sec,e_per_sec/snr_m5_through,mag_SN,mag_SN/snr_m5_through,m5_calc]
+                    
+                     for i in range(1,6,1):
+                         m5_calc_plus,snr_m5_plus=self.Get_m5(filtre,mag_SN,obs['sky']+float(i)/10.,photParams,FWHMeff)
+                         m5_calc_minus,snr_m5_minus=self.Get_m5(filtre,mag_SN,obs['sky']-float(i)/10.,photParams,FWHMeff)
+                         resu.append(mag_SN/snr_m5_plus)
+                         resu.append(mag_SN/snr_m5_minus)
+                         resu.append(m5_calc_plus)
+                         resu.append(m5_calc_minus)
+                     resu.append(self.z)
+                     self.table_LC_syste.add_row(tuple(resu))
              else:
                  self.table_LC.add_row(('LSST::'+filtre,obs['mjd'],visittime,FWHMeff,obs['moon_frac'],obs['sky'],obs['kAtm'],obs['airmass'],obs['m5sigmadepth'],obs['Nexp'],-1.,-1.))   
 
@@ -228,4 +252,17 @@ class Simul_Fit_SN():
 
         else:
             return None,None,-1,'Noobs'
-       
+
+    def Get_m5(self,filtre,mag_SN,msky,photParams,FWHMeff):
+
+        wavelen_min, wavelen_max, wavelen_step=self.transmission.lsst_system[filtre].getWavelenLimits(None,None,None)
+                
+        flatSed = Sed()
+        flatSed.setFlatSED(wavelen_min, wavelen_max, wavelen_step)
+        flux0=np.power(10.,-0.4*msky)
+        flatSed.multiplyFluxNorm(flux0)
+        m5_calc=SignalToNoise.calcM5(flatSed,self.transmission.lsst_atmos_aerosol[filtre],self.transmission.lsst_system[filtre],photParams=photParams,FWHMeff=FWHMeff)
+        snr_m5_through,gamma_through=SignalToNoise.calcSNR_m5(mag_SN,self.transmission.lsst_atmos_aerosol[filtre],m5_calc,photParams)
+        
+        return m5_calc,snr_m5_through
+                 
